@@ -8,30 +8,45 @@ import csv
 from datetime import datetime
 import concurrent.futures
 from requests.adapters import HTTPAdapter
+import os
 
+# -------------------------------
 # Configurações Gerais
+# -------------------------------
 BASE_URL = "https://www.scielo.br"
-URL_ISSUES = "https://www.scielo.br/j/qn/grid"
+# Definindo as fontes de dados: grid URL e rótulo da revista
+JOURNALS = [
+    {"name": "QN", "grid_url": "https://www.scielo.br/j/qn/grid"},
+    {"name": "JBCS", "grid_url": "https://www.scielo.br/j/jbchs/grid"}
+]
 
 # Intervalo de espera entre requisições (em segundos)
-MIN_WAIT = 1.0
-MAX_WAIT = 3.0
+MIN_WAIT = 0.1
+MAX_WAIT = 0.7
 
-# Configuração do logger
+# Arquivo que armazena as edições já processadas
+PROGRESS_FILE = "processed_editions.txt"
+
+# -------------------------------
+# Configuração do Logger
+# -------------------------------
 logging.basicConfig(
     level=logging.INFO,  # Altere para DEBUG para mais detalhes
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
-logger = logging.getLogger("ScraperQuimicaNova")
+logger = logging.getLogger("ScraperPublicaçõesQuímicas")
 
+# -------------------------------
 # Funções Auxiliares
+# -------------------------------
 def random_sleep():
     """ Aguarda um tempo aleatório entre MIN_WAIT e MAX_WAIT """
     time.sleep(random.uniform(MIN_WAIT, MAX_WAIT))
 
 def create_session():
     """
-    Cria e retorna um objeto requests.Session() com headers configurados.
+    Cria e retorna um objeto requests.Session() com headers configurados e
+    um pool de conexões aumentado.
     """
     session = requests.Session()
     session.headers.update({
@@ -39,21 +54,34 @@ def create_session():
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/110.0.0.0 Safari/537.36")
     })
-    adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50)
+    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
     session.mount("https://", adapter)
     return session
 
 def parse_date_yyyymmdd(date_str):
     """
-    Converte uma string no formato YYYYMMDD para um objeto datetime.
+    Converte uma string no formato YYYYMMDD ou YYYYMM para uma string 'YYYY-MM'.
     Retorna None se a conversão falhar.
     """
     if not date_str:
         return None
+    
     try:
-        return datetime.strptime(date_str, "%Y%m%d")
+        # Tenta primeiro o formato YYYYMMDD
+        if len(date_str) == 8:
+            dt = datetime.strptime(date_str, "%Y%m%d")
+        # Se for no formato YYYYMM
+        elif len(date_str) == 6:
+            dt = datetime.strptime(date_str, "%Y%m")
+        else:
+            return None
+        
+        # Retorna apenas o ano e o mês no formato desejado
+        return dt.strftime("%Y-%m")
+    
     except ValueError:
         return None
+
 
 def get_soup(session, url):
     """
@@ -65,11 +93,34 @@ def get_soup(session, url):
     resp.raise_for_status()
     return BeautifulSoup(resp.text, "html.parser")
 
+# -------------------------------
+# Mecanismo de Progresso
+# -------------------------------
+def load_processed_editions():
+    """
+    Carrega as edições já processadas a partir de PROGRESS_FILE.
+    Retorna um conjunto com as URLs das edições.
+    """
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+            return set(lines)
+    return set()
+
+def save_processed_edition(ed_link):
+    """
+    Registra a URL da edição processada no arquivo PROGRESS_FILE.
+    """
+    with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
+        f.write(ed_link + "\n")
+
+# -------------------------------
 # Extração de Dados
-def extract_issues_links(session, url=URL_ISSUES):
+# -------------------------------
+def extract_issues_links(session, url):
     """
     Extrai a lista de anos/volumes e os links das edições a partir da página de grid.
-    Retorna uma lista de dicionários.
+    Retorna uma lista de dicionários com as chaves: "year", "volume" e "edition_links".
     """
     logger.info(f"Extraindo issues (anos/volumes) de {url}")
     soup = get_soup(session, url)
@@ -161,7 +212,6 @@ def extract_articles_from_edition(session, edition_url):
                 if link_tag:
                     link_href = link_tag.get("href")
                     full_link = BASE_URL + link_href
-                    # Verifica se o label contém termos que identifiquem o link
                     if any(word in label_lower for word in ['abstract', 'resumo', 'summary']):
                         abstract_link = full_link
                         if '?lang=' not in abstract_link:
@@ -171,7 +221,7 @@ def extract_articles_from_edition(session, edition_url):
                     elif any(word in label_lower for word in ['pdf']):
                         pdf_link = full_link
         article_info = {
-            "edition_url": edition_url,
+            "edition_url": edition_url,  # Posteriormente extrairemos o número da edição
             "publication_date": publication_date,
             "publication_type": publication_type,
             "title": title,
@@ -205,7 +255,6 @@ def extract_keywords_etc(session, abstract_url):
         text_in_strong = strong.get_text(strip=True).lower()
         if any(term in text_in_strong for term in ["keyword", "palavras-chave", "palabras clave"]):
             text_full = p.get_text(strip=True)
-            # Remove os termos iniciais, independentemente do idioma
             text_clean = re.sub(r"(?i)^(keywords|palavras-chave|palabras clave):\s*", "", text_full)
             splits = re.split(r"[;,\.]\s*", text_clean)
             for kw in splits:
@@ -233,50 +282,135 @@ def extract_institutions_from_article_page(session, abstract_url):
                 institutions.append(inst_text)
     return institutions
 
-# Processamento de Cada Edição (usando concorrência)
-def process_edition(ed_link, year, volume, session):
-    articles = extract_articles_from_edition(session, ed_link)
-    for art in articles:
-        art["year"] = year
-        art["volume"] = volume
-        kws = extract_keywords_etc(session, art["abstract_link"])
-        art["keywords"] = kws
-        insts = extract_institutions_from_article_page(session, art["abstract_link"])
-        art["institutions"] = insts
-    return articles
+# -------------------------------
+# Processamento de Cada Edição (com Concorrência e Retentativas)
+# -------------------------------
+MAX_RETRIES = 3
 
-# Pipeline Principal
-def main():
-    session = create_session()
-    issues_info = extract_issues_links(session, URL_ISSUES)
-    all_articles = []
+def process_edition_with_retries(ed_link, year, volume, journal_name, session):
+    """
+    Tenta processar a edição várias vezes antes de desistir.
+    Se for bem-sucedida, retorna a lista de artigos; caso contrário, retorna lista vazia.
+    """
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            logger.info(f"Tentando processar edição {ed_link} (Tentativa {attempt}/{MAX_RETRIES})")
+            articles = extract_articles_from_edition(session, ed_link)
+            # Extração do número da edição a partir da URL: exemplo "/j/qn/i/2025.v48n1/" -> "1"
+            match = re.search(r'n(\d+)', ed_link)
+            edition_number = match.group(1) if match else ""
+            for art in articles:
+                art["year"] = year
+                art["volume"] = volume
+                art["edition_number"] = edition_number
+                art["journal"] = journal_name
+                kws = extract_keywords_etc(session, art["abstract_link"])
+                art["keywords"] = kws
+                insts = extract_institutions_from_article_page(session, art["abstract_link"])
+                art["institutions"] = insts
+            return articles
+        except Exception as e:
+            logger.warning(f"Erro ao processar edição {ed_link} na tentativa {attempt}: {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(5)
+            else:
+                logger.error(f"Edição {ed_link} falhou após {MAX_RETRIES} tentativas.")
+                return []
+
+def process_journal(journal, session, processed_editions):
+    """
+    Processa uma revista (journal) individual:
+      - Extrai os issues (anos/volumes)
+      - Agrupa por (year, volume)
+      - Processa cada edição (com retentativas) e salva a edição como processada se bem-sucedida.
+    Retorna a lista de artigos extraídos da revista.
+    """
+    journal_name = journal["name"]
+    grid_url = journal["grid_url"]
+    logger.info(f"Processando revista {journal_name} com grid URL: {grid_url}")
+    issues_info = extract_issues_links(session, grid_url)
     
-    # Processa edições em paralelo 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+    # Agrupar issues por (year, volume)
+    grouped_issues = {}
+    for issue in issues_info:
+        key = (issue["year"], issue["volume"])
+        grouped_issues.setdefault(key, []).extend(issue["edition_links"])
+    
+    journal_articles = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
         future_to_edition = {}
-        for issue in issues_info:
-            year = issue["year"]
-            volume = issue["volume"]
-
-            for ed_link in issue["edition_links"][:2]: # '[:2]' somente para limitacao de testes, no real deve ser retirado para pegar tudo
-                future = executor.submit(process_edition, ed_link, year, volume, session)
+        for (year, volume), edition_links in grouped_issues.items():
+            logger.info(f"Revista {journal_name} - Processando Year={year}, Volume={volume}. {len(edition_links)} edições encontradas.")
+            for ed_link in edition_links[:2]: # '[:2]' para limitação de teste
+                # Se a edição já foi processada, pula
+                if ed_link in processed_editions:
+                    logger.info(f"Edição {ed_link} já processada. Pulando.")
+                    continue
+                future = executor.submit(process_edition_with_retries, ed_link, year, volume, journal_name, session)
                 future_to_edition[future] = ed_link
+                
         for future in concurrent.futures.as_completed(future_to_edition):
             ed = future_to_edition[future]
             try:
                 articles = future.result()
+                if articles:
+                    journal_articles.extend(articles)
+                    # Após sucesso, salva a edição como processada
+                    save_processed_edition(ed)
+                    processed_editions.add(ed)
+            except Exception as exc:
+                logger.error(f"Erro ao processar edição {ed} mesmo após retentativas: {exc}")
+    return journal_articles
+
+# -------------------------------
+# Pipeline Principal
+# -------------------------------
+def main():
+    session = create_session()
+    all_articles = []
+    
+    # Carrega as edições já processadas para evitar duplicação
+    processed_editions = load_processed_editions()
+    logger.info(f"{len(processed_editions)} edições já processadas anteriormente.")
+    
+    # Processamento paralelo das revistas
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as journal_executor:
+        future_to_journal = {
+            journal_executor.submit(process_journal, journal, session, processed_editions): journal 
+            for journal in JOURNALS
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_journal):
+            journal = future_to_journal[future]
+            try:
+                articles = future.result() or []  # Se o resultado for None, usa lista vazia
                 all_articles.extend(articles)
             except Exception as exc:
-                logger.error(f"Erro ao processar edição {ed}: {exc}")
+                logger.error(f"Erro ao processar a revista {journal['name']}: {exc}")
+    
+    # Remover duplicatas de publicações com o mesmo título
+    unique_articles = {}
+    for article in all_articles:
+        # Remove a chave 'edition_url' e 'abstract_link' se existir  para não salvar no CSV
+        article.pop("edition_url", None)
+        article.pop("abstract_link", None)
+        article.pop("pdf_link", None)
+        article.pop("text_link", None)
+        article.pop("pid", None)
+        title = article.get("title", "").strip()
+        if title not in unique_articles:
+            unique_articles[title] = article
+        else:
+            logger.info(f"Artigo duplicado encontrado: {title}. Ignorando duplicata.")
+    all_articles = list(unique_articles.values())
     
     # Salvando os resultados em CSV
     if all_articles:
         fieldnames = [
-            "year", "volume", "edition_url", "publication_date",
-            "publication_type", "title", "authors", "pid",
-            "abstract_link", "text_link", "pdf_link", "keywords", "institutions"
+            "journal", "year", "volume", "edition_number", "publication_date",
+            "publication_type", "title", "authors", "keywords", "institutions"
         ]
-        with open("quimicanova_articles.csv", "w", newline="", encoding="utf-8") as f:
+        with open("articles.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for article in all_articles:
@@ -287,9 +421,27 @@ def main():
                     article["publication_date"] = article["publication_date"].strftime("%Y-%m-%d")
                 writer.writerow(article)
         logger.info(f"Finalizado! Total de artigos extraídos: {len(all_articles)}")
-        logger.info("Arquivo CSV 'quimicanova_articles.csv' criado com sucesso.")
+        logger.info("Arquivo CSV 'articles.csv' criado com sucesso.")
     else:
         logger.info("Nenhum artigo foi encontrado. Verifique se houve problema na extração.")
+
+def load_processed_editions():
+    """
+    Carrega as edições já processadas a partir de PROGRESS_FILE.
+    Retorna um conjunto com as URLs das edições.
+    """
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+            return set(lines)
+    return set()
+
+def save_processed_edition(ed_link):
+    """
+    Registra a URL da edição processada no arquivo PROGRESS_FILE.
+    """
+    with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
+        f.write(ed_link + "\n")
 
 if __name__ == "__main__":
     main()
