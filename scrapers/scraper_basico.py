@@ -1,3 +1,7 @@
+"""
+para extrair as informações fundamentais de publicações das revistas Química Nova (QN) e Journal of the Brazilian Chemical Society (JBCS) a partir da SciELO, pegando as informações básicas de cada publicação e guardando em 'articles.csv'
+"""
+
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -10,10 +14,9 @@ import concurrent.futures
 from requests.adapters import HTTPAdapter
 import os
 
-# -------------------------------
-# Configurações Gerais
-# -------------------------------
+# Configurações da URL
 BASE_URL = "https://www.scielo.br"
+
 # Definindo as fontes de dados: grid URL e rótulo da revista
 JOURNALS = [
     {"name": "QN", "grid_url": "https://www.scielo.br/j/qn/grid"},
@@ -27,22 +30,33 @@ MAX_WAIT = 0.7
 # Arquivo que armazena as edições já processadas
 PROGRESS_FILE = "processed_editions.txt"
 
-# -------------------------------
 # Configuração do Logger
-# -------------------------------
 logging.basicConfig(
     level=logging.INFO,  # Altere para DEBUG para mais detalhes
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 logger = logging.getLogger("ScraperPublicaçõesQuímicas")
 
-# -------------------------------
 # Funções Auxiliares
-# -------------------------------
+
+"""
+Pausa a execução por um tempo aleatório entre MIN_WAIT e MAX_WAIT
+
+Retorna:
+    None
+"""
 def random_sleep():
     """ Aguarda um tempo aleatório entre MIN_WAIT e MAX_WAIT """
     time.sleep(random.uniform(MIN_WAIT, MAX_WAIT))
 
+    
+"""
+Cria e configura uma sessão HTTP com um User-Agent moderno e um pool de conexões aumentado,
+adequada para realizar scraping de forma eficiente
+
+Retorna:
+    requests.Session: Sessão configurada para requisições HTTP
+"""
 def create_session():
     """
     Cria e retorna um objeto requests.Session() com headers configurados e
@@ -58,6 +72,16 @@ def create_session():
     session.mount("https://", adapter)
     return session
 
+
+"""
+Converte uma string de data no formato 'YYYYMMDD' ou 'YYYYMM' para 'YYYY-MM'
+
+Parâmetros:
+    date_str (str): Data como string 
+
+Returna:
+    str: Data formatada como 'YYYY-MM', ou None se a conversão falhar
+"""
 def parse_date_yyyymmdd(date_str):
     """
     Converte uma string no formato YYYYMMDD ou YYYYMM para uma string 'YYYY-MM'.
@@ -82,46 +106,96 @@ def parse_date_yyyymmdd(date_str):
     except ValueError:
         return None
 
+"""
+Realiza uma requisição GET usando a sessão fornecida e retorna um objeto BeautifulSoup do HTML
 
+Parâmetros:
+    session (requests.Session): Sessão HTTP configurada
+    url (str): URL a ser requisitada
+
+Returna:
+    BeautifulSoup: Objeto com o conteúdo HTML da resposta
+"""
 def get_soup(session, url):
-    """
-    Faz GET na URL usando a session fornecida e retorna um objeto BeautifulSoup.
-    """
+
     logger.debug(f"Requisitando: {url}")
     random_sleep()
     resp = session.get(url, timeout=30)
     resp.raise_for_status()
     return BeautifulSoup(resp.text, "html.parser")
 
-# -------------------------------
-# Mecanismo de Progresso
-# -------------------------------
+"""
+Carrega as edições já processadas a partir do arquivo PROGRESS_FILE
+
+Retorna:
+    set: Conjunto contendo as URLs das edições já processadas
+"""
 def load_processed_editions():
-    """
-    Carrega as edições já processadas a partir de PROGRESS_FILE.
-    Retorna um conjunto com as URLs das edições.
-    """
+
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
             return set(lines)
     return set()
 
+"""
+Registra a URL de uma edição processada no arquivo PROGRESS_FILE
+
+Parâmetros:
+    ed_link (str): URL da edição processada
+
+Retorna:
+    None
+"""
 def save_processed_edition(ed_link):
-    """
-    Registra a URL da edição processada no arquivo PROGRESS_FILE.
-    """
+    
     with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
         f.write(ed_link + "\n")
 
-# -------------------------------
+# Mecanismo de Progresso
+
+"""
+Carrega as edições já processadas a partir do arquivo PROGRESS_FILE
+
+Retorna:
+    set: Conjunto com as URLs das edições processadas
+"""
+def load_processed_editions():
+
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+            return set(lines)
+    return set()
+
+"""
+Registra a URL de uma edição processada no arquivo PROGRESS_FILE
+
+Parâmetros:
+    ed_link (str): URL da edição a ser registrada
+
+Retorna:
+    None.[]
+"""
+def save_processed_edition(ed_link):
+
+    with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
+        f.write(ed_link + "\n")
+
 # Extração de Dados
-# -------------------------------
+        
+"""
+Extrai a lista de anos/volumes e os links das edições a partir da página de grid
+
+Parâmetros:
+    session (requests.Session): Sessão HTTP para realizar as requisições
+    url (str): URL da página de grid contendo a tabela de volumes/edições
+
+Retorna:
+    list: Lista de dicionários com as chaves "year", "volume" e "edition_links".
+"""
 def extract_issues_links(session, url):
-    """
-    Extrai a lista de anos/volumes e os links das edições a partir da página de grid.
-    Retorna uma lista de dicionários com as chaves: "year", "volume" e "edition_links".
-    """
+    
     logger.info(f"Extraindo issues (anos/volumes) de {url}")
     soup = get_soup(session, url)
     
@@ -154,11 +228,18 @@ def extract_issues_links(session, url):
     logger.info(f"Foram encontrados {len(result)} anos/volumes.")
     return result
 
+"""
+Extrai os dados dos artigos de uma edição específica
+
+Parâmetros:
+    session (requests.Session): Sessão HTTP para realizar as requisições
+    edition_url (str): Caminho relativo da edição (ex.: "/j/qn/i/2025.v48n1/")
+
+Retorna:
+    list: Lista de dicionários com os dados extraídos do artigo (data de publicação, tipo título, autores, PID, e links para abstract, texto e PDF)
+"""
 def extract_articles_from_edition(session, edition_url):
-    """
-    Dado um link de edição (ex.: "/j/qn/i/2025.v48n1/"), extrai os artigos da edição.
-    Retorna uma lista de dicionários com os dados extraídos.
-    """
+    
     full_url = BASE_URL + edition_url
     logger.debug(f"Extraindo artigos da edição: {full_url}")
     soup = get_soup(session, full_url)
@@ -220,8 +301,9 @@ def extract_articles_from_edition(session, edition_url):
                         text_link = full_link
                     elif any(word in label_lower for word in ['pdf']):
                         pdf_link = full_link
+
         article_info = {
-            "edition_url": edition_url,  # Posteriormente extrairemos o número da edição
+            "edition_url": edition_url, 
             "publication_date": publication_date,
             "publication_type": publication_type,
             "title": title,
@@ -236,11 +318,18 @@ def extract_articles_from_edition(session, edition_url):
     logger.info(f"Encontrados {len(articles_data)} artigos na edição {edition_url}")
     return articles_data
 
+"""
+Extrai as palavras-chave do abstract de um artigo
+
+Parâmetros:
+    session (requests.Session): Sessão HTTP para realizar a requisição
+    abstract_url (str): URL do abstract do artigo
+
+Retorna:
+    list: Lista de palavras-chave extraídas. Retorna uma lista vazia se a URL for inválida ou não contiver keywords
+"""
 def extract_keywords_etc(session, abstract_url):
-    """
-    Acessa o link do abstract para extrair as keywords.
-    Retorna uma lista com as palavras-chave.
-    """
+    
     if not abstract_url:
         return []
     
@@ -263,11 +352,18 @@ def extract_keywords_etc(session, abstract_url):
                     keywords.append(kw_clean)
     return keywords
 
+"""
+Extrai as informações institucionais a partir do abstract do artigo
+
+Parâmetros:
+    session (requests.Session): Sessão HTTP para realizar a requisição
+    abstract_url (str): URL do abstract do artigo
+
+Retorna:
+    list: Lista com as descrições das instituições extraídas. Retorna uma lista vazia se não houver dados
+"""
 def extract_institutions_from_article_page(session, abstract_url):
-    """
-    Faz parse das divs de modal que contêm informações das instituições.
-    Retorna uma lista com as descrições das instituições.
-    """
+    
     if not abstract_url:
         return []
     logger.debug(f"Extraindo instituições de: {abstract_url}")
@@ -282,16 +378,26 @@ def extract_institutions_from_article_page(session, abstract_url):
                 institutions.append(inst_text)
     return institutions
 
-# -------------------------------
 # Processamento de Cada Edição (com Concorrência e Retentativas)
-# -------------------------------
+
 MAX_RETRIES = 3
 
+"""
+Tenta processar uma edição múltiplas (MAX_RETRIES) vezes antes de desistir e retorna os artigos extraídos
+
+Parâmetros:
+    ed_link (str): URL da edição a ser processada
+    year (int): Ano da edição
+    volume (int): Volume da edição
+    journal_name (str): Nome da revista
+    session (requests.Session): Sessão HTTP utilizada para as requisições
+
+Retorna:
+    list: Lista de dicionários com os dados dos artigos extraídos
+    Se todas as tentativas falharem, retorna uma lista vazia
+"""
 def process_edition_with_retries(ed_link, year, volume, journal_name, session):
-    """
-    Tenta processar a edição várias vezes antes de desistir.
-    Se for bem-sucedida, retorna a lista de artigos; caso contrário, retorna lista vazia.
-    """
+    
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             logger.info(f"Tentando processar edição {ed_link} (Tentativa {attempt}/{MAX_RETRIES})")
@@ -317,14 +423,20 @@ def process_edition_with_retries(ed_link, year, volume, journal_name, session):
                 logger.error(f"Edição {ed_link} falhou após {MAX_RETRIES} tentativas.")
                 return []
 
+"""
+Processa uma revista (journal), extraindo os issues (anos/volumes) e os artigos de cada edição,
+utilizando retentativas e registrando as edições já processadas
+
+Parâmetros:
+    journal (dict): Dicionário com as chaves "name" e "grid_url" da revista
+    session (requests.Session): Sessão HTTP configurada para realizar as requisições
+    processed_editions (set): Conjunto contendo as URLs das edições já processadas
+
+Retorna:
+    list: Lista de dicionários com os dados dos artigos extraídos da revista
+"""
 def process_journal(journal, session, processed_editions):
-    """
-    Processa uma revista (journal) individual:
-      - Extrai os issues (anos/volumes)
-      - Agrupa por (year, volume)
-      - Processa cada edição (com retentativas) e salva a edição como processada se bem-sucedida.
-    Retorna a lista de artigos extraídos da revista.
-    """
+    
     journal_name = journal["name"]
     grid_url = journal["grid_url"]
     logger.info(f"Processando revista {journal_name} com grid URL: {grid_url}")
@@ -362,10 +474,17 @@ def process_journal(journal, session, processed_editions):
                 logger.error(f"Erro ao processar edição {ed} mesmo após retentativas: {exc}")
     return journal_articles
 
-# -------------------------------
 # Pipeline Principal
-# -------------------------------
-def main():
+
+"""
+Executa o fluxo completo de scraping para as revistas definidas em JOURNALS,
+processando as edições de cada revista de forma paralela e utilizando retentativas
+Remove publicações duplicadas (baseado no título) e retorna a lista final de artigos
+
+Retorna:
+    list: Lista de dicionários com os dados dos artigos extraídos.
+"""
+def run_scraper():
     session = create_session()
     all_articles = []
     
@@ -404,44 +523,4 @@ def main():
             logger.info(f"Artigo duplicado encontrado: {title}. Ignorando duplicata.")
     all_articles = list(unique_articles.values())
     
-    # Salvando os resultados em CSV
-    if all_articles:
-        fieldnames = [
-            "journal", "year", "volume", "edition_number", "publication_date",
-            "publication_type", "title", "authors", "keywords", "institutions"
-        ]
-        with open("articles.csv", "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for article in all_articles:
-                article["authors"] = "; ".join(article["authors"]) if article["authors"] else ""
-                article["keywords"] = "; ".join(article["keywords"]) if article["keywords"] else ""
-                article["institutions"] = "; ".join(article["institutions"]) if article["institutions"] else ""
-                if isinstance(article["publication_date"], datetime):
-                    article["publication_date"] = article["publication_date"].strftime("%Y-%m-%d")
-                writer.writerow(article)
-        logger.info(f"Finalizado! Total de artigos extraídos: {len(all_articles)}")
-        logger.info("Arquivo CSV 'articles.csv' criado com sucesso.")
-    else:
-        logger.info("Nenhum artigo foi encontrado. Verifique se houve problema na extração.")
-
-def load_processed_editions():
-    """
-    Carrega as edições já processadas a partir de PROGRESS_FILE.
-    Retorna um conjunto com as URLs das edições.
-    """
-    if os.path.exists(PROGRESS_FILE):
-        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-            return set(lines)
-    return set()
-
-def save_processed_edition(ed_link):
-    """
-    Registra a URL da edição processada no arquivo PROGRESS_FILE.
-    """
-    with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
-        f.write(ed_link + "\n")
-
-if __name__ == "__main__":
-    main()
+    return all_articles
