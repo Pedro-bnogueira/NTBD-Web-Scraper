@@ -74,7 +74,7 @@ cur.execute("""
     SELECT DISTINCT TRIM(BOTH '"' FROM author_array.value) AS nome_autor
     FROM (
         SELECT string_to_array(
-            regexp_replace(authors, E'\\[\\'|\\'\\]', '', 'g'),  -- Remove '[' e ']' e aspas simples ao redor
+            regexp_replace(authors, E'[^\\\w\\\s,]', '', 'g'),  -- Remove '[' e ']' e aspas simples ao redor
             E', '  -- Usa ', ' como delimitador
         ) AS autores
         FROM Temp_Publicacoes
@@ -116,11 +116,11 @@ cur.execute("""
     FROM (
         SELECT 
             string_to_array(
-                regexp_replace(keywords, E'\\[\\'|\\'\\]', '', 'g'),  -- Remove '[' e ']' e aspas simples ao redor
+                regexp_replace(keywords, E'[^\\\w\\\s,]', '', 'g'),  -- Remove '[' e ']' e aspas simples ao redor
                 E', '  -- Usa ', ' como delimitador correto
             ) AS palavras_chave,
             string_to_array(
-                regexp_replace(subareas, E'\\[\\'|\\'\\]', '', 'g'),
+                regexp_replace(subareas, E'[^\\\w\\\s,]', '', 'g'),
                 E', '
             ) AS subareas_list
         FROM Temp_Publicacoes
@@ -190,7 +190,7 @@ FROM Fato_Publicacao fp
 JOIN Temp_Publicacoes tp ON tp.title = fp.titulo
 JOIN LATERAL unnest(
     string_to_array(
-        regexp_replace(tp.keywords, E'\\[\\'|\\'\\]', '', 'g'), 
+        regexp_replace(tp.keywords, E'[^\\\w\\\s,]', '', 'g'), 
         E', '
     )
 ) AS palavra_extraida(palavraChave) ON TRUE
