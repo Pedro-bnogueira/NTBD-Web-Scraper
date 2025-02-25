@@ -5,7 +5,7 @@ def replace_empty_with_null(value):
     return None if value == '' else value
 
 # Conectar ao banco de dados
-conn = psycopg2.connect("dbname=<nomeDoProjeto> user=postgres password=<suaSenha> host=localhost")
+conn = psycopg2.connect("dbname=DW_Projeto user=postgres password=SocorroDeus host=localhost")
 cur = conn.cursor()
 
 # Criar a tabela temporária
@@ -144,6 +144,60 @@ SELECT
 FROM Temp_Publicacoes p
 JOIN Dim_TipoPublicacao tp ON p.publication_type = tp.tipo_publicacao
 WHERE p.publication_date IS NOT NULL;
+""")
+cur.execute("""
+INSERT INTO Ponte_Autor (chavePublicacao, chaveAutor)
+SELECT 
+    fp.titulo AS chavePublicacao,
+    da.chaveAutor
+FROM Fato_Publicacao fp
+JOIN Temp_Publicacoes tp ON tp.title = fp.titulo
+JOIN Dim_Autor da ON TRUE
+JOIN LATERAL (
+    SELECT unnest(
+        string_to_array(
+            replace(replace(replace(tp.authors, '[', ''), ']', ''), '''', ''), 
+            ', '
+        )
+    ) AS autor
+) autor_extraido ON TRIM(da.nome_autor) = TRIM(autor_extraido.autor)
+ON CONFLICT DO NOTHING; -- Impede erro de duplicação
+
+""")
+
+cur.execute("""
+INSERT INTO Ponte_Instituicao (chavePublicacao, chaveInstituicao)
+SELECT 
+    fp.titulo AS chavePublicacao,
+    di.chaveInstituicao
+FROM Fato_Publicacao fp
+JOIN Temp_Publicacoes tp ON tp.title = fp.titulo
+JOIN LATERAL unnest(
+    string_to_array(tp.instituicao, ';')
+) AS instituicao_extraida(nome_instituicao) ON TRUE
+JOIN Dim_Instituicao di 
+ON TRIM(di.nome_instituicao) = TRIM(instituicao_extraida.nome_instituicao)
+ON CONFLICT DO NOTHING;
+
+""")
+
+cur.execute("""
+INSERT INTO Ponte_PalavraChave (chavePublicacao, chavePalavraChave)
+SELECT 
+    fp.titulo AS chavePublicacao,
+    dpk.chavePalavraChave
+FROM Fato_Publicacao fp
+JOIN Temp_Publicacoes tp ON tp.title = fp.titulo
+JOIN LATERAL unnest(
+    string_to_array(
+        regexp_replace(tp.keywords, E'\\[\\'|\\'\\]', '', 'g'), 
+        E', '
+    )
+) AS palavra_extraida(palavraChave) ON TRUE
+JOIN Dim_PalavraChave dpk 
+ON TRIM(dpk.palavraChave) = TRIM(palavra_extraida.palavraChave)
+ON CONFLICT DO NOTHING;
+
 """)
 
 
