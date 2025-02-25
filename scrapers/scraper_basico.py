@@ -453,7 +453,7 @@ def process_journal(journal, session, processed_editions):
         future_to_edition = {}
         for (year, volume), edition_links in grouped_issues.items():
             logger.info(f"Revista {journal_name} - Processando Year={year}, Volume={volume}. {len(edition_links)} edições encontradas.")
-            for ed_link in edition_links[:2]: # '[:2]' para limitação de teste
+            for ed_link in edition_links: 
                 # Se a edição já foi processada, pula
                 if ed_link in processed_editions:
                     logger.info(f"Edição {ed_link} já processada. Pulando.")
